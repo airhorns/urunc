@@ -121,7 +121,39 @@ func GetUnikernelConfig(bundleDir string, spec *specs.Spec) (*UnikernelConfig, e
 	if err := jsonConf.decode(); err != nil {
 		return nil, err
 	}
+
+	// The core unikernel config (type, hypervisor, binary, cmdline...) is
+	// baked into the image's urunc.json, so validate() above forced us down
+	// this path. But some fields are opt-ins set at run-time via the pod
+	// YAML — snapshot.enable is the canonical example. Those are still
+	// present on the OCI spec even though validate() failed, so overlay
+	// them onto the json-derived config after decode.
+	overlaySpecRuntimeAnnotations(jsonConf, spec)
 	return jsonConf, nil
+}
+
+// overlaySpecRuntimeAnnotations copies run-time-only annotations (ones not
+// part of the image's urunc.json) from the OCI spec onto a config that was
+// loaded from urunc.json. Values are base64-decoded here because the spec
+// annotations are in their encoded wire form.
+func overlaySpecRuntimeAnnotations(c *UnikernelConfig, spec *specs.Spec) {
+	if spec == nil {
+		return
+	}
+	if v := spec.Annotations[annotSnapshotEnable]; v != "" {
+		if dec, err := base64.StdEncoding.DecodeString(v); err == nil {
+			c.SnapshotEnable = string(dec)
+		} else {
+			c.SnapshotEnable = v
+		}
+	}
+	if v := spec.Annotations[annotSnapshotReadyDelayMs]; v != "" {
+		if dec, err := base64.StdEncoding.DecodeString(v); err == nil {
+			c.SnapshotReadyDelayMs = string(dec)
+		} else {
+			c.SnapshotReadyDelayMs = v
+		}
+	}
 }
 
 // getConfigFromSpec retrieves the urunc specific annotations from the spec and populates the Unikernel config.
