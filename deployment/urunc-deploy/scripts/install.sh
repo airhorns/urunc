@@ -255,6 +255,10 @@ function configure_containerd() {
 
     tomlq -i -t $(printf '%s.runtime_type=%s' ${runtime_table} ${runtime_type}) ${configuration_file}
     tomlq -i -t $(printf '%s.container_annotations=["com.urunc.unikernel.*"]' ${runtime_table}) ${configuration_file}
+    # Also forward pod-level annotations, so that k8s pod.metadata.annotations
+    # (the only place annotations can live in a PodSpec) actually reaches the
+    # OCI spec that urunc reads.
+    tomlq -i -t $(printf '%s.pod_annotations=["com.urunc.unikernel.*"]' ${runtime_table}) ${configuration_file}
 
     if [ "${DEBUG}" == "true" ]; then
         tomlq -i -t '.debug.level = "debug"' ${configuration_file}
