@@ -41,6 +41,57 @@ type VMM interface {
 	Ok() error
 }
 
+// SnapshotVMM is implemented by monitors that can run in supervised,
+// API-driven mode to produce or restore a template snapshot rather than
+// cold-booting via syscall.Exec + --config-file. Only firecracker implements
+// this today.
+type SnapshotVMM interface {
+	VMM
+	// Supervise spawns the VMM with an API socket and either creates a
+	// template snapshot (when args.Snapshot.CacheHit is false) or restores
+	// one (when true), then blocks until the child exits. It encapsulates
+	// everything BuildExecCmd + syscall.Exec would have done for this
+	// container.
+	Supervise(args ExecArgs, ukernel Unikernel) error
+}
+
+// SnapshotArgs carries the resolved paths and parameters required for a
+// supervised firecracker invocation. Nil on ExecArgs means cold-boot.
+type SnapshotArgs struct {
+	// CacheDir is the absolute path to the cache entry directory
+	// (/var/lib/urunc/snapshots/<key>) as visible from the monitor rootfs
+	// after pivot.
+	CacheDir string
+	// VmstatePath / MemPath are absolute paths to the snapshot files. On
+	// a cache hit, they point at the committed files; on a miss they point
+	// at the .tmp files used during build.
+	VmstatePath string
+	MemPath     string
+	// CacheHit is true when a valid template exists; false means this run
+	// must build the template as part of its first boot.
+	CacheHit bool
+	// GuestMAC is the MAC address that will be used for the guest
+	// network interface. On build it is the deterministic template MAC;
+	// on restore it is read from the committed manifest.
+	GuestMAC string
+	// IfaceID is the firecracker network interface identifier used both
+	// at build time (for the initial PUT /network-interfaces) and at
+	// restore time (for network_overrides).
+	IfaceID string
+	// ReadyDelayMs is how long to sleep between InstanceStart and
+	// /snapshot/create on the build path. Ignored on restore.
+	ReadyDelayMs uint
+	// APISocketPath is the Unix-domain socket path firecracker should
+	// listen on. Must be writable in both the host and the pivoted
+	// monitor rootfs.
+	APISocketPath string
+	// CommitFn is called on a successful build after /snapshot/create
+	// completes and the VM has been resumed. It is expected to rename
+	// the .tmp files into their committed names and write manifest.json.
+	// Nil on the restore path.
+	CommitFn func() error
+}
+
 type NetDevParams struct {
 	IP      string // The veth device IP
 	Mask    string // The veth device mask
@@ -105,6 +156,10 @@ type ExecArgs struct {
 	VSockDevID    int      // The guest-cid
 	Net           NetDevParams
 	Sharedfs      SharedfsParams
+	// Snapshot is nil for cold-boot containers. When non-nil, the VMM must
+	// implement SnapshotVMM and urunc drives a supervised API lifecycle
+	// instead of syscall.Exec. See SnapshotArgs.
+	Snapshot *SnapshotArgs
 }
 
 type MonitorCliArgs struct {

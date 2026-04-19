@@ -110,82 +110,8 @@ func (fc *Firecracker) BuildExecCmd(args types.ExecArgs, ukernel types.Unikernel
 		cmdString += " --no-seccomp"
 	}
 
-	// VM config for Firecracker
-	fcMem := DefaultMemory
-	if args.MemSizeB != 0 {
-		fcMem = bytesToMiB(args.MemSizeB)
-		// Check if memory is too small
-		if fcMem == 0 {
-			fcMem = DefaultMemory
-		}
-	}
-	// NOTE: Firecracker supports only one initrd.
-	// Therefore, we depend on the guest/unikernel implementation
-	// to properly handle that case and concatenate the initrd
-	// files if there are more than one. Hence, always give priority
-	// to the initrd taken from args.
-	extraMonArgs := ukernel.MonitorCli()
-	initrdPath := args.InitrdPath
-	if initrdPath == "" {
-		initrdPath = extraMonArgs.ExtraInitrd
-	}
-	FCMachine := FirecrackerMachine{
-		VcpuCount:       args.VCPUs,
-		MemSizeMiB:      fcMem,
-		Smt:             false,
-		TrackDirtyPages: false,
-	}
+	FCConfig := buildFirecrackerConfig(args, ukernel, args.Net.MAC)
 
-	// Net config for Firecracker
-	FCNet := make([]FirecrackerNet, 0)
-	if args.Net.TapDev != "" {
-		AnIF := FirecrackerNet{
-			IfaceID:  "net1",
-			GuestMAC: args.Net.MAC,
-			HostIF:   args.Net.TapDev,
-		}
-		FCNet = append(FCNet, AnIF)
-	}
-
-	// Block config for Firecracker
-	// TODO: Add support for block devices in FIrecracker
-	FCDrives := make([]FirecrackerDrive, 0)
-
-	bArgs := ukernel.MonitorBlockCli()
-	for _, blockArg := range bArgs {
-		aBlock := FirecrackerDrive{
-			DriveID:   blockArg.ID,
-			IsRO:      false,
-			IsRootDev: false,
-			HostPath:  blockArg.Path,
-		}
-		if blockArg.ID == "rootfs" {
-			aBlock.IsRootDev = true
-		}
-		FCDrives = append(FCDrives, aBlock)
-	}
-	FCSource := FirecrackerBootSource{
-		ImagePath:  args.UnikernelPath,
-		BootArgs:   args.Command,
-		InitrdPath: initrdPath,
-	}
-
-	var FCVSockDev FirecrackerVSockDev
-	if args.VAccelType == "vsock" {
-		FCVSockDev = FirecrackerVSockDev{
-			GuestCID: args.VSockDevID,
-			UDSPath:  args.VSockDevPath + "/vaccel.sock",
-			VSockID:  "root",
-		}
-	}
-
-	FCConfig := &FirecrackerConfig{
-		Source:  FCSource,
-		Machine: FCMachine,
-		Drives:  FCDrives,
-		NetIfs:  FCNet,
-		VSock:   FCVSockDev,
-	}
 	FCConfigJSON, err := json.Marshal(FCConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal Firecracker config: %w", err)
@@ -199,7 +125,88 @@ func (fc *Firecracker) BuildExecCmd(args types.ExecArgs, ukernel types.Unikernel
 	return exArgs, nil
 }
 
+// buildFirecrackerConfig translates urunc ExecArgs + Unikernel hooks into
+// the set of firecracker configuration structs that together describe a
+// cold-boot VM. Used by both the --config-file path (BuildExecCmd) and the
+// API-driven build path (Supervise).
+//
+// guestMAC overrides args.Net.MAC: callers on the snapshot-build path pass
+// the deterministic template MAC; callers on the cold-boot path pass the
+// veth-derived MAC (same as args.Net.MAC).
+func buildFirecrackerConfig(args types.ExecArgs, ukernel types.Unikernel, guestMAC string) *FirecrackerConfig {
+	fcMem := DefaultMemory
+	if args.MemSizeB != 0 {
+		fcMem = bytesToMiB(args.MemSizeB)
+		if fcMem == 0 {
+			fcMem = DefaultMemory
+		}
+	}
+
+	// NOTE: Firecracker supports only one initrd. Concatenation of multiple
+	// initrds is handled by the unikernel implementation; hence prefer the
+	// path from args when set.
+	extraMonArgs := ukernel.MonitorCli()
+	initrdPath := args.InitrdPath
+	if initrdPath == "" {
+		initrdPath = extraMonArgs.ExtraInitrd
+	}
+
+	machine := FirecrackerMachine{
+		VcpuCount:       args.VCPUs,
+		MemSizeMiB:      fcMem,
+		Smt:             false,
+		TrackDirtyPages: false,
+	}
+
+	nets := make([]FirecrackerNet, 0)
+	if args.Net.TapDev != "" {
+		nets = append(nets, FirecrackerNet{
+			IfaceID:  "net1",
+			GuestMAC: guestMAC,
+			HostIF:   args.Net.TapDev,
+		})
+	}
+
+	drives := make([]FirecrackerDrive, 0)
+	for _, blockArg := range ukernel.MonitorBlockCli() {
+		d := FirecrackerDrive{
+			DriveID:   blockArg.ID,
+			IsRO:      false,
+			IsRootDev: false,
+			HostPath:  blockArg.Path,
+		}
+		if blockArg.ID == "rootfs" {
+			d.IsRootDev = true
+		}
+		drives = append(drives, d)
+	}
+
+	source := FirecrackerBootSource{
+		ImagePath:  args.UnikernelPath,
+		BootArgs:   args.Command,
+		InitrdPath: initrdPath,
+	}
+
+	var vsock FirecrackerVSockDev
+	if args.VAccelType == "vsock" {
+		vsock = FirecrackerVSockDev{
+			GuestCID: args.VSockDevID,
+			UDSPath:  args.VSockDevPath + "/vaccel.sock",
+			VSockID:  "root",
+		}
+	}
+
+	return &FirecrackerConfig{
+		Source:  source,
+		Machine: machine,
+		Drives:  drives,
+		NetIfs:  nets,
+		VSock:   vsock,
+	}
+}
+
 // PreExec performs pre-execution setup. Firecracker has no special pre-exec requirements.
 func (fc *Firecracker) PreExec(_ types.ExecArgs) error {
 	return nil
 }
+

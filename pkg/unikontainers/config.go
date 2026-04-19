@@ -45,6 +45,9 @@ const (
 	annotBlock         = "com.urunc.unikernel.block"
 	annotBlockMntPoint = "com.urunc.unikernel.blkMntPoint"
 	annotMountRootfs   = "com.urunc.unikernel.mountRootfs"
+
+	annotSnapshotEnable       = "com.urunc.unikernel.snapshot.enable"
+	annotSnapshotReadyDelayMs = "com.urunc.unikernel.snapshot.readyDelayMs"
 )
 
 // A UnikernelConfig struct holds the info provided by bima image on how to execute our unikernel
@@ -58,6 +61,11 @@ type UnikernelConfig struct {
 	Block            string `json:"com.urunc.unikernel.block,omitempty"`
 	BlkMntPoint      string `json:"com.urunc.unikernel.blkMntPoint,omitempty"`
 	MountRootfs      string `json:"com.urunc.unikernel.mountRootfs"`
+
+	// SnapshotEnable (base64-encoded "true"/"1"/"yes") opts this container
+	// into the firecracker snapshot/fork path. See docs/snapshot.md.
+	SnapshotEnable       string `json:"com.urunc.unikernel.snapshot.enable,omitempty"`
+	SnapshotReadyDelayMs string `json:"com.urunc.unikernel.snapshot.readyDelayMs,omitempty"`
 }
 
 // validate checks if the mandatory configuration fields are present.
@@ -127,6 +135,8 @@ func getConfigFromSpec(spec *specs.Spec) *UnikernelConfig {
 	block := spec.Annotations[annotBlock]
 	blkMntPoint := spec.Annotations[annotBlockMntPoint]
 	MountRootfs := spec.Annotations[annotMountRootfs]
+	snapshotEnable := spec.Annotations[annotSnapshotEnable]
+	snapshotDelay := spec.Annotations[annotSnapshotReadyDelayMs]
 	uniklog.WithFields(logrus.Fields{
 		"unikernelType":    tryDecode(unikernelType),
 		"unikernelVersion": tryDecode(unikernelVersion),
@@ -140,15 +150,17 @@ func getConfigFromSpec(spec *specs.Spec) *UnikernelConfig {
 	}).WithField("source", "spec").Debug("urunc annotations")
 
 	return &UnikernelConfig{
-		UnikernelBinary:  unikernelBinary,
-		UnikernelVersion: unikernelVersion,
-		UnikernelType:    unikernelType,
-		UnikernelCmd:     unikernelCmd,
-		Hypervisor:       hypervisor,
-		Initrd:           initrd,
-		Block:            block,
-		BlkMntPoint:      blkMntPoint,
-		MountRootfs:      MountRootfs,
+		UnikernelBinary:      unikernelBinary,
+		UnikernelVersion:     unikernelVersion,
+		UnikernelType:        unikernelType,
+		UnikernelCmd:         unikernelCmd,
+		Hypervisor:           hypervisor,
+		Initrd:               initrd,
+		Block:                block,
+		BlkMntPoint:          blkMntPoint,
+		MountRootfs:          MountRootfs,
+		SnapshotEnable:       snapshotEnable,
+		SnapshotReadyDelayMs: snapshotDelay,
 	}
 }
 
@@ -258,6 +270,22 @@ func (c *UnikernelConfig) decode() error {
 	}
 	c.MountRootfs = string(decoded)
 
+	if c.SnapshotEnable != "" {
+		decoded, err = base64.StdEncoding.DecodeString(c.SnapshotEnable)
+		if err != nil {
+			return fmt.Errorf("failed to decode SnapshotEnable: %v", err)
+		}
+		c.SnapshotEnable = string(decoded)
+	}
+
+	if c.SnapshotReadyDelayMs != "" {
+		decoded, err = base64.StdEncoding.DecodeString(c.SnapshotReadyDelayMs)
+		if err != nil {
+			return fmt.Errorf("failed to decode SnapshotReadyDelayMs: %v", err)
+		}
+		c.SnapshotReadyDelayMs = string(decoded)
+	}
+
 	return nil
 }
 
@@ -290,6 +318,12 @@ func (c *UnikernelConfig) Map() map[string]string {
 	}
 	if c.MountRootfs != "" {
 		myMap[annotMountRootfs] = c.MountRootfs
+	}
+	if c.SnapshotEnable != "" {
+		myMap[annotSnapshotEnable] = c.SnapshotEnable
+	}
+	if c.SnapshotReadyDelayMs != "" {
+		myMap[annotSnapshotReadyDelayMs] = c.SnapshotReadyDelayMs
 	}
 
 	return myMap

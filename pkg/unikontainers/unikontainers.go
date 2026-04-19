@@ -169,13 +169,14 @@ func (u *Unikontainer) SetRunningState() error {
 	return u.saveContainerState()
 }
 
-func (u *Unikontainer) SetupNet() (types.NetDevParams, error) {
+func (u *Unikontainer) SetupNet() (types.NetDevParams, string, error) {
 	networkType := u.getNetworkType()
 	uniklog.WithField("network type", networkType).Debug("Retrieved network type")
 	netArgs := types.NetDevParams{}
+	ethName := ""
 	netManager, err := network.NewNetworkManager(networkType)
 	if err != nil {
-		return netArgs, fmt.Errorf("failed to create network manager for %s type: %v", networkType, err)
+		return netArgs, "", fmt.Errorf("failed to create network manager for %s type: %v", networkType, err)
 	}
 
 	networkInfo, err := netManager.NetworkSetup(u.Spec.Process.User.UID, u.Spec.Process.User.GID)
@@ -196,9 +197,10 @@ func (u *Unikontainer) SetupNet() (types.NetDevParams, error) {
 		// virtual ethernet interface inside the namespace
 		netArgs.MAC = networkInfo.EthDevice.MAC
 		netArgs.MTU = networkInfo.EthDevice.MTU
+		ethName = networkInfo.EthDevice.Interface
 	}
 
-	return netArgs, nil
+	return netArgs, ethName, nil
 }
 
 // nolint:gocyclo
@@ -301,7 +303,7 @@ func (u *Unikontainer) Exec(metrics m.Writer) error {
 	}
 
 	// handle network
-	netArgs, err := u.SetupNet()
+	netArgs, ethIfName, err := u.SetupNet()
 	if err != nil {
 		uniklog.Errorf("failed to setup network: %v", err)
 		return err
@@ -460,6 +462,64 @@ func (u *Unikontainer) Exec(metrics m.Writer) error {
 
 	// ExecArgs
 	vmmArgs.Command = unikernelCmd
+
+	// Snapshot/fork opt-in (firecracker only). When enabled, we keep this
+	// process alive as a supervisor, talk to firecracker over its API socket,
+	// and either build a template snapshot on first boot or restore from the
+	// host-side cache on subsequent boots. The branch must be taken BEFORE
+	// pivot: the snapshot cache lives on the host at /var/lib/urunc/snapshots
+	// and the monitor needs to see it at that absolute path.
+	snapshotVMM, snapshotCapable := vmm.(types.SnapshotVMM)
+	useSnapshot := snapshotEnabled(u.State.Annotations) && snapshotCapable
+	if useSnapshot {
+		// Resolve unikernel/initrd to absolute host paths (fc will consume
+		// them before we've pivoted, so container-relative paths won't work).
+		hostUnikernelPath := filepath.Join(rootfsParams.MonRootfs, unikernelPath)
+		hostInitrdPath := ""
+		if initrdPath != "" {
+			hostInitrdPath = filepath.Join(rootfsParams.MonRootfs, initrdPath)
+		}
+		prep, prepErr := u.prepareSnapshot(
+			vmmArgs,
+			unikernelType,
+			unikernelVersion,
+			vmmType,
+			hostUnikernelPath,
+			hostInitrdPath,
+			vmm.Path(),
+			unikernelCmd,
+		)
+		if prepErr != nil {
+			uniklog.WithError(prepErr).Error("failed to prepare snapshot cache")
+			return prepErr
+		}
+		vmmArgs.Snapshot = prep.args
+		// Rewrite the container veth MAC to match the MAC baked into the
+		// snapshot. Without this, post-restore packets would fail veth/tap
+		// MAC checks. Safe per-container because each lives in its own netns.
+		if ethIfName != "" {
+			if err := network.SetLinkMAC(ethIfName, prep.args.GuestMAC); err != nil {
+				uniklog.WithError(err).Errorf("failed to rewrite veth MAC on %s", ethIfName)
+				return err
+			}
+			netArgs.MAC = prep.args.GuestMAC
+			unikernelParams.Net.MAC = prep.args.GuestMAC
+			vmmArgs.Net.MAC = prep.args.GuestMAC
+		}
+		// Use host-absolute paths for the unikernel binary / initrd so fc
+		// can open them without a pivot.
+		vmmArgs.UnikernelPath = hostUnikernelPath
+		vmmArgs.InitrdPath = hostInitrdPath
+
+		if err := u.ExecuteHooks("StartContainer"); err != nil {
+			return err
+		}
+		if err := u.SendMessage(StartSuccess); err != nil {
+			return err
+		}
+		uniklog.WithField("cache_hit", prep.args.CacheHit).Debug("entering firecracker supervise loop")
+		return snapshotVMM.Supervise(vmmArgs, unikernel)
+	}
 
 	// pivot
 	_, err = findNS(u.Spec.Linux.Namespaces, specs.MountNamespace)

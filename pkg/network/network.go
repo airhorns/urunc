@@ -265,6 +265,25 @@ func networkSetup(tapName string, ipAddress string, redirectLink netlink.Link, a
 	return newTapDevice, nil
 }
 
+// SetLinkMAC changes the hardware address of the link named ifName to mac.
+// Used by snapshot-mode containers to force the container veth's MAC to
+// match the MAC baked into the firecracker snapshot (which cannot be
+// overridden at restore time).
+func SetLinkMAC(ifName, mac string) error {
+	link, err := netlink.LinkByName(ifName)
+	if err != nil {
+		return fmt.Errorf("look up link %s: %w", ifName, err)
+	}
+	hw, err := net.ParseMAC(mac)
+	if err != nil {
+		return fmt.Errorf("parse mac %s: %w", mac, err)
+	}
+	if err := netlink.LinkSetHardwareAddr(link, hw); err != nil {
+		return fmt.Errorf("set hw addr on %s: %w", ifName, err)
+	}
+	return nil
+}
+
 func CleanupAllUruncTaps() error {
 	netlog.Debug("net cleanup called")
 
