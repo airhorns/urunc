@@ -50,13 +50,13 @@ WORKDIR /artifacts
 RUN cp -r /app/dist .
 
 FROM alpine:3.21@sha256:b6a6be0ff92ab6db8acd94f5d1b7a6c2f0f5d10ce3c24af348d333ac6da80685 AS firecracker-builder
+ARG FC_VERSION=v1.13.1
 RUN apk update && apk add --no-cache curl tar
 RUN ARCH=$(uname -m) && \
-    VERSION="v1.7.0" && \
     RELEASE_URL="https://github.com/firecracker-microvm/firecracker/releases" && \
-    curl -L -o firecracker.tgz ${RELEASE_URL}/download/${VERSION}/firecracker-${VERSION}-${ARCH}.tgz && \
+    curl -L -o firecracker.tgz ${RELEASE_URL}/download/${FC_VERSION}/firecracker-${FC_VERSION}-${ARCH}.tgz && \
     tar xzf firecracker.tgz && \
-    mv release-${VERSION}-${ARCH}/firecracker-${VERSION}-${ARCH} firecracker
+    mv release-${FC_VERSION}-${ARCH}/firecracker-${FC_VERSION}-${ARCH} firecracker
 WORKDIR /artifacts
 RUN cp /firecracker .
 
