@@ -113,9 +113,17 @@ func (u *Unikontainer) prepareSnapshot(
 		return nil, err
 	}
 
+	// The fc API socket path must fit inside sun_path (108 bytes on Linux).
+	// Both the cache dir and container ID are 64-char sha256 strings, so
+	// joining them blows the limit. Keep the socket at a short /run path
+	// keyed by a short prefix of the container ID.
+	cidPrefix := vmmArgs.ContainerID
+	if len(cidPrefix) > 12 {
+		cidPrefix = cidPrefix[:12]
+	}
 	sa := &types.SnapshotArgs{
 		CacheDir:      entry.Dir,
-		APISocketPath: filepath.Join(entry.Dir, "fc-"+vmmArgs.ContainerID+".sock"),
+		APISocketPath: filepath.Join("/run", "urunc-fc-"+cidPrefix+".sock"),
 		IfaceID:       "net1",
 		ReadyDelayMs:  snapshotReadyDelayMs(u.State.Annotations),
 	}
