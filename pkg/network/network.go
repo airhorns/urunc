@@ -118,6 +118,18 @@ func createTapDevice(name string, mtu int, ownerUID, ownerGID uint32) (netlink.L
 		return nil, fmt.Errorf("failed to set tap device MTU to %d: %w", mtu, err)
 	}
 
+	// netlink holds one /dev/net/tun fd per queue so we can set
+	// owner/group/mtu via ioctls; the tap itself is persisted
+	// (TUNSETPERSIST=1, set by the netlink library by default) so closing
+	// our fds doesn't destroy it. On the cold-boot path syscall.Exec would
+	// have closed these anyway, but on the supervised snapshot path we
+	// keep running and then spawn firecracker, which tries to open the
+	// same tap exclusively and fails with EBUSY unless we close first.
+	for _, tapFd := range tapLink.Fds {
+		_ = tapFd.Close()
+	}
+	tapLink.Fds = nil
+
 	return tapLink, nil
 }
 
